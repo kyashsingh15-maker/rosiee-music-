@@ -159,8 +159,7 @@ class YouTube:
         except Exception:
             pass
         return tracks
-
-    async def download(self, video_id: str, video: bool = False) -> str | None:
+async def download(self, video_id: str, video: bool = False) -> str | None:
         url = self.base + video_id
         os.makedirs("downloads", exist_ok=True)
 
@@ -172,35 +171,41 @@ class YouTube:
 
         cookie = self.get_cookies()
 
-        def _build_opts(use_cookie: bool) -> dict:
-            opts = {
-                "outtmpl": "downloads/%(id)s.%(ext)s",
-                "quiet": True,
-                "noplaylist": True,
-                "geo_bypass": True,
-                "no_warnings": True,
-                "overwrites": False,
-                "nocheckcertificate": True,
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": ["android", "ios", "web"],
-                    }
-                },
+        attempts = [
+            # Attempt 1: TV / Web Safari with cookies
+            {
+                "cookiefile": cookie,
+                "extractor_args": {"youtube": {"player_client": ["tv", "web_safari", "mweb"]}},
+            },
+            # Attempt 2: Android / iOS WITHOUT cookies (mobile clients reject browser cookies)
+            {
+                "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
+            },
+        ] if cookie else [
+            {
+                "extractor_args": {"youtube": {"player_client": ["tv", "android", "ios"]}},
             }
-            if use_cookie and cookie:
-                opts["cookiefile"] = cookie
-
-            if video:
-                opts["format"] = "bestvideo[height<=?720][width<=?1280]+bestaudio/best[height<=?720]/best"
-                opts["merge_output_format"] = "mp4"
-            else:
-                opts["format"] = "bestaudio/best"
-            return opts
+        ]
 
         def _download():
-            attempts = [True, False] if cookie else [False]
-            for use_cookie in attempts:
-                ydl_opts = _build_opts(use_cookie)
+            for extra_opts in attempts:
+                ydl_opts = {
+                    "outtmpl": "downloads/%(id)s.%(ext)s",
+                    "quiet": True,
+                    "noplaylist": True,
+                    "geo_bypass": True,
+                    "no_warnings": True,
+                    "overwrites": False,
+                    "nocheckcertificate": True,
+                    "remote_components": ["ejs:github"],
+                    **extra_opts,
+                }
+                if video:
+                    ydl_opts["format"] = "bestvideo[height<=?720]+bestaudio/best[height<=?720]/best"
+                    ydl_opts["merge_output_format"] = "mp4"
+                else:
+                    ydl_opts["format"] = "bestaudio/best"
+
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     try:
                         info = ydl.extract_info(url, download=True)
@@ -209,7 +214,7 @@ class YouTube:
                             if Path(downloaded).exists():
                                 return downloaded
                     except Exception as ex:
-                        logger.warning(f"Download attempt (cookie={use_cookie}) failed: {ex}")
+                        logger.warning("Download attempt failed: %s", ex)
                         continue
 
                 for file in Path("downloads").glob(f"{video_id}.*"):
@@ -218,4 +223,3 @@ class YouTube:
             return None
 
         return await asyncio.to_thread(_download)
-        
