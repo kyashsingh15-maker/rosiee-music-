@@ -166,6 +166,11 @@ class YouTube:
         if Path(filename).exists():
             return filename
 
+        if not video:
+            for existing in Path("downloads").glob(f"{video_id}.*"):
+                if existing.suffix in {".webm", ".m4a", ".opus", ".mp3", ".mp4"}:
+                    return str(existing)
+
         cookie = self.get_cookies()
         base_opts = {
             "outtmpl": "downloads/%(id)s.%(ext)s",
@@ -182,24 +187,31 @@ class YouTube:
         if video:
             ydl_opts = {
                 **base_opts,
-                "format": "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)",
+                "format": "bestvideo[height<=?720][width<=?1280]+bestaudio/best[height<=?720]/best",
                 "merge_output_format": "mp4",
             }
         else:
             ydl_opts = {
                 **base_opts,
-                "format": "bestaudio[ext=webm][acodec=opus]",
+                "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
             }
 
         def _download():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
-                    ydl.download([url])
+                    info = ydl.extract_info(url, download=True)
+                    if info:
+                        downloaded = ydl.prepare_filename(info)
+                        if Path(downloaded).exists():
+                            return downloaded
                 except (yt_dlp.utils.DownloadError, yt_dlp.utils.ExtractorError):
                     return None
                 except Exception as ex:
                     logger.warning("Download failed: %s", ex)
                     return None
-            return filename
+            for file in Path("downloads").glob(f"{video_id}.*"):
+                if file.exists():
+                    return str(file)
+            return filename if Path(filename).exists() else None
 
         return await asyncio.to_thread(_download)
