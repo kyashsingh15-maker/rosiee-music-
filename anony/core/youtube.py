@@ -38,9 +38,10 @@ class YouTube:
 
     def get_cookies(self):
         if not self.checked:
-            for file in os.listdir(self.cookie_dir):
-                if file.endswith(".txt"):
-                    self.cookies.append(f"{self.cookie_dir}/{file}")
+            if os.path.exists(self.cookie_dir):
+                for file in os.listdir(self.cookie_dir):
+                    if file.endswith(".txt"):
+                        self.cookies.append(f"{self.cookie_dir}/{file}")
             self.checked = True
         if not self.cookies:
             if not self.warned:
@@ -51,6 +52,7 @@ class YouTube:
 
     async def save_cookies(self, urls: list[str]) -> None:
         logger.info("Saving cookies from urls...")
+        os.makedirs(self.cookie_dir, exist_ok=True)
         async with aiohttp.ClientSession() as session:
             for url in urls:
                 name = url.split("/")[-1]
@@ -160,58 +162,60 @@ class YouTube:
 
     async def download(self, video_id: str, video: bool = False) -> str | None:
         url = self.base + video_id
-        ext = "mp4" if video else "webm"
-        filename = f"downloads/{video_id}.{ext}"
+        os.makedirs("downloads", exist_ok=True)
 
-        if Path(filename).exists():
-            return filename
-
-        if not video:
-            for existing in Path("downloads").glob(f"{video_id}.*"):
-                if existing.suffix in {".webm", ".m4a", ".opus", ".mp3", ".mp4"}:
-                    return str(existing)
+        for existing in Path("downloads").glob(f"{video_id}.*"):
+            if video and existing.suffix == ".mp4":
+                return str(existing)
+            if not video and existing.suffix in {".webm", ".m4a", ".opus", ".mp3", ".mp4"}:
+                return str(existing)
 
         cookie = self.get_cookies()
-        base_opts = {
-            "outtmpl": "downloads/%(id)s.%(ext)s",
-            "quiet": True,
-            "noplaylist": True,
-            "geo_bypass": True,
-            "no_warnings": True,
-            "overwrites": False,
-            "nocheckcertificate": True,
-            "cookiefile": cookie,
-            "remote_components": ["ejs:github"],
-        }
 
-        if video:
-            ydl_opts = {
-                **base_opts,
-                "format": "bestvideo[height<=?720][width<=?1280]+bestaudio/best[height<=?720]/best",
-                "merge_output_format": "mp4",
+        def _build_opts(use_cookie: bool) -> dict:
+            opts = {
+                "outtmpl": "downloads/%(id)s.%(ext)s",
+                "quiet": True,
+                "noplaylist": True,
+                "geo_bypass": True,
+                "no_warnings": True,
+                "overwrites": False,
+                "nocheckcertificate": True,
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android", "ios", "web"],
+                    }
+                },
             }
-        else:
-            ydl_opts = {
-                **base_opts,
-                "format": "bestaudio[ext=webm][acodec=opus]/bestaudio[ext=m4a]/bestaudio/best",
-            }
+            if use_cookie and cookie:
+                opts["cookiefile"] = cookie
+
+            if video:
+                opts["format"] = "bestvideo[height<=?720][width<=?1280]+bestaudio/best[height<=?720]/best"
+                opts["merge_output_format"] = "mp4"
+            else:
+                opts["format"] = "bestaudio/best"
+            return opts
 
         def _download():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                try:
-                    info = ydl.extract_info(url, download=True)
-                    if info:
-                        downloaded = ydl.prepare_filename(info)
-                        if Path(downloaded).exists():
-                            return downloaded
-                except (yt_dlp.utils.DownloadError, yt_dlp.utils.ExtractorError):
-                    return None
-                except Exception as ex:
-                    logger.warning("Download failed: %s", ex)
-                    return None
-            for file in Path("downloads").glob(f"{video_id}.*"):
-                if file.exists():
-                    return str(file)
-            return filename if Path(filename).exists() else None
+            attempts = [True, False] if cookie else [False]
+            for use_cookie in attempts:
+                ydl_opts = _build_opts(use_cookie)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    try:
+                        info = ydl.extract_info(url, download=True)
+                        if info:
+                            downloaded = ydl.prepare_filename(info)
+                            if Path(downloaded).exists():
+                                return downloaded
+                    except Exception as ex:
+                        logger.warning(f"Download attempt (cookie={use_cookie}) failed: {ex}")
+                        continue
+
+                for file in Path("downloads").glob(f"{video_id}.*"):
+                    if file.exists():
+                        return str(file)
+            return None
 
         return await asyncio.to_thread(_download)
+        
